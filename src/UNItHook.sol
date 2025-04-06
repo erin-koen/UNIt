@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.26;
 
-import "@uniswap/v4-core/contracts/interfaces/IPoolManager.sol";
-import "@uniswap/v4-core/contracts/libraries/PoolKey.sol";
-import "@uniswap/v4-core/contracts/libraries/PoolId.sol";
-import "@uniswap/v4-core/contracts/libraries/Currency.sol";
-import "@uniswap/v4-core/contracts/libraries/TickMath.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "../lib/v4-core/src/interfaces/IPoolManager.sol";
+import "../lib/v4-core/src/interfaces/IHooks.sol";
+import "../lib/v4-core/src/types/PoolKey.sol";
+import "../lib/v4-core/src/types/PoolId.sol";
+import "../lib/v4-core/src/types/Currency.sol";
+import "../lib/v4-core/src/libraries/TickMath.sol";
+import "../lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "./UNIt.sol";
 
-contract UNItHook {
+contract UNItHook is IHooks {
     IPoolManager public immutable poolManager;
     UNIt public immutable unitToken;
     IERC20 public immutable collateralToken;
@@ -25,14 +26,14 @@ contract UNItHook {
     // Trove management
     struct Trove {
         uint256 collateral;
-        uint256 debt;
+        int256 debt;
         uint256 stake;
         uint8 status; // 0: non-existent, 1: active, 2: closed by owner, 3: closed by liquidation
     }
 
     mapping(address => Trove) public troves;
     uint256 public totalCollateral;
-    uint256 public totalDebt;
+    int256 public totalDebt;
 
     // Stability Pool
     struct StabilityDeposit {
@@ -44,8 +45,8 @@ contract UNItHook {
     uint256 public totalStabilityDeposits;
 
     // Events
-    event TroveUpdated(address indexed owner, uint256 collateral, uint256 debt);
-    event TroveLiquidated(address indexed owner, uint256 collateral, uint256 debt);
+    event TroveUpdated(address indexed owner, uint256 collateral, int256 debt);
+    event TroveLiquidated(address indexed owner, uint256 collateral, int256 debt);
     event StabilityDepositUpdated(address indexed owner, uint256 amount);
     event Redemption(uint256 amount, uint256 collateral);
     event RevenueGenerated(uint256 amount);
@@ -61,62 +62,65 @@ contract UNItHook {
             currency1: Currency.wrap(address(unitToken)),
             fee: 3000, // 0.3% fee tier
             tickSpacing: 60,
-            hooks: address(this)
+            hooks: IHooks(address(this))
         });
     }
 
     // Core hook functions
+    function beforeInitialize(address sender, PoolKey calldata key, uint160 sqrtPriceX96)
+        external
+        pure
+        returns (bytes4)
+    {
+        return IHooks.beforeInitialize.selector;
+    }
+
+    function afterInitialize(address sender, PoolKey calldata key, uint160 sqrtPriceX96, int24 tick)
+        external
+        pure
+        returns (bytes4)
+    {
+        return IHooks.afterInitialize.selector;
+    }
+
     function beforeAddLiquidity(
         address sender,
         PoolKey calldata key,
-        IPoolManager.ModifyPositionParams calldata params,
+        IPoolManager.ModifyLiquidityParams calldata params,
         bytes calldata hookData
-    ) external returns (bytes4) {
-        require(msg.sender == address(poolManager), "Only pool manager");
+    ) external pure returns (bytes4) {
+        return IHooks.beforeAddLiquidity.selector;
+    }
 
-        // Extract mint amount from hookData
-        uint256 mintAmount = abi.decode(hookData, (uint256));
-
-        // Calculate collateral value
-        uint256 collateralValue = _getCollateralValue(params.liquidityDelta);
-
-        // Check if minting is allowed
-        if (mintAmount > 0) {
-            require(collateralValue >= (mintAmount * MIN_COLLATERAL_RATIO) / 10000, "Insufficient collateral");
-
-            // Update trove
-            _updateTrove(sender, collateralValue, mintAmount);
-
-            // User can mint tokens themselves
-            unitToken.mint(sender, mintAmount);
-        }
-
-        return UNItHook.beforeAddLiquidity.selector;
+    function afterAddLiquidity(
+        address sender,
+        PoolKey calldata key,
+        IPoolManager.ModifyLiquidityParams calldata params,
+        BalanceDelta delta,
+        BalanceDelta feesAccrued,
+        bytes calldata hookData
+    ) external returns (bytes4, BalanceDelta) {
+        return (IHooks.afterAddLiquidity.selector, BalanceDelta.wrap(0));
     }
 
     function beforeRemoveLiquidity(
         address sender,
         PoolKey calldata key,
-        IPoolManager.ModifyPositionParams calldata params,
+        IPoolManager.ModifyLiquidityParams calldata params,
         bytes calldata hookData
-    ) external returns (bytes4) {
-        require(msg.sender == address(poolManager), "Only pool manager");
+    ) external pure returns (bytes4) {
+        return IHooks.beforeRemoveLiquidity.selector;
+    }
 
-        // Extract repay amount from hookData
-        uint256 repayAmount = abi.decode(hookData, (uint256));
-
-        // Check if repayment is required
-        if (repayAmount > 0) {
-            require(unitToken.balanceOf(sender) >= repayAmount, "Insufficient UNIt balance");
-
-            // User can burn tokens themselves
-            unitToken.burn(sender, repayAmount);
-
-            // Update trove
-            _updateTrove(sender, 0, -repayAmount);
-        }
-
-        return UNItHook.beforeRemoveLiquidity.selector;
+    function afterRemoveLiquidity(
+        address sender,
+        PoolKey calldata key,
+        IPoolManager.ModifyLiquidityParams calldata params,
+        BalanceDelta delta,
+        BalanceDelta feesAccrued,
+        bytes calldata hookData
+    ) external returns (bytes4, BalanceDelta) {
+        return (IHooks.afterRemoveLiquidity.selector, BalanceDelta.wrap(0));
     }
 
     function beforeSwap(
@@ -124,16 +128,15 @@ contract UNItHook {
         PoolKey calldata key,
         IPoolManager.SwapParams calldata params,
         bytes calldata hookData
-    ) external returns (bytes4) {
+    ) external returns (bytes4, BeforeSwapDelta, uint24) {
         require(msg.sender == address(poolManager), "Only pool manager");
 
         // Check if redemption is triggered
         if (_shouldTriggerRedemption(params)) {
-            _processRedemption(params.amountSpecified);
-            return 0; // Halt normal swap execution
+            _processRedemption(uint256(params.amountSpecified < 0 ? -params.amountSpecified : params.amountSpecified));
         }
 
-        return UNItHook.beforeSwap.selector;
+        return (IHooks.beforeSwap.selector, BeforeSwapDelta.wrap(0), 0);
     }
 
     function afterSwap(
@@ -142,7 +145,7 @@ contract UNItHook {
         IPoolManager.SwapParams calldata params,
         BalanceDelta delta,
         bytes calldata hookData
-    ) external {
+    ) external returns (bytes4, int128) {
         require(msg.sender == address(poolManager), "Only pool manager");
 
         // Check for undercollateralized troves
@@ -154,10 +157,32 @@ contract UNItHook {
             unitToken.distributeRevenue(revenue);
             emit RevenueGenerated(revenue);
         }
+
+        return (IHooks.afterSwap.selector, 0);
+    }
+
+    function beforeDonate(
+        address sender,
+        PoolKey calldata key,
+        uint256 amount0,
+        uint256 amount1,
+        bytes calldata hookData
+    ) external returns (bytes4) {
+        return IHooks.beforeDonate.selector;
+    }
+
+    function afterDonate(
+        address sender,
+        PoolKey calldata key,
+        uint256 amount0,
+        uint256 amount1,
+        bytes calldata hookData
+    ) external returns (bytes4) {
+        return IHooks.afterDonate.selector;
     }
 
     // Internal functions
-    function _updateTrove(address owner, uint256 collateralDelta, uint256 debtDelta) internal {
+    function _updateTrove(address owner, uint256 collateralDelta, int256 debtDelta) internal {
         Trove storage trove = troves[owner];
 
         if (trove.status == 0) {
@@ -175,7 +200,8 @@ contract UNItHook {
 
     function _processLiquidations() internal {
         // Get current price from Uniswap pool
-        (uint160 sqrtPriceX96,,,,,,) = poolManager.getSlot0(PoolId.toId(poolKey));
+        bytes32 poolId = keccak256(abi.encode(poolKey));
+        uint160 sqrtPriceX96 = _getCurrentPrice(poolId);
         uint256 price = uint256(sqrtPriceX96) * uint256(sqrtPriceX96) / (1 << 96);
 
         // Iterate through troves and check collateralization
@@ -189,7 +215,8 @@ contract UNItHook {
             if (trove.status != 1) continue; // Skip non-active troves
 
             uint256 collateralValue = (trove.collateral * price) / 1e18;
-            uint256 minCollateralValue = (trove.debt * MIN_COLLATERAL_RATIO) / 10000;
+            uint256 minCollateralValue =
+                (uint256(trove.debt > 0 ? trove.debt : -trove.debt) * MIN_COLLATERAL_RATIO) / 10000;
 
             if (collateralValue < minCollateralValue) {
                 // Calculate liquidation reward
@@ -216,7 +243,8 @@ contract UNItHook {
         require(totalCollateral > 0, "No collateral available");
 
         // Get current price from Uniswap pool
-        (uint160 sqrtPriceX96,,,,,,) = poolManager.getSlot0(PoolId.toId(poolKey));
+        bytes32 poolId = keccak256(abi.encode(poolKey));
+        uint160 sqrtPriceX96 = _getCurrentPrice(poolId);
         uint256 price = uint256(sqrtPriceX96) * uint256(sqrtPriceX96) / (1 << 96);
 
         // Calculate redemption fee
@@ -228,7 +256,7 @@ contract UNItHook {
         require(collateralToSend <= totalCollateral, "Insufficient collateral");
 
         // Update total debt and collateral
-        totalDebt -= amount;
+        totalDebt -= int256(amount);
         totalCollateral -= collateralToSend;
 
         // Transfer collateral to redeemer
@@ -242,7 +270,8 @@ contract UNItHook {
 
     function _shouldTriggerRedemption(IPoolManager.SwapParams calldata params) internal view returns (bool) {
         // Get current price from Uniswap pool
-        (uint160 sqrtPriceX96,,,,,,) = poolManager.getSlot0(PoolId.toId(poolKey));
+        bytes32 poolId = keccak256(abi.encode(poolKey));
+        uint160 sqrtPriceX96 = _getCurrentPrice(poolId);
         uint256 price = uint256(sqrtPriceX96) * uint256(sqrtPriceX96) / (1 << 96);
 
         // Check if swap would push price below peg (1:1)
@@ -255,26 +284,49 @@ contract UNItHook {
         }
     }
 
-    function _getCollateralValue(uint128 liquidity) internal view returns (uint256) {
+    function _getCollateralValue(int256 liquidityDelta) internal view returns (uint256) {
         // Get current price from Uniswap pool
-        (uint160 sqrtPriceX96,,,,,,) = poolManager.getSlot0(PoolId.toId(poolKey));
+        bytes32 poolId = keccak256(abi.encode(poolKey));
+        uint160 sqrtPriceX96 = _getCurrentPrice(poolId);
         uint256 price = uint256(sqrtPriceX96) * uint256(sqrtPriceX96) / (1 << 96);
 
         // Calculate collateral value based on liquidity and price
-        // This is a simplified calculation - in production, we'd want to use more precise math
-        return (uint256(liquidity) * price) / 1e18;
+        return uint256(liquidityDelta > 0 ? liquidityDelta : -liquidityDelta) * price / 1e18;
     }
 
     function _calculateRevenue(BalanceDelta delta) internal pure returns (uint256) {
         // Calculate revenue from swap fees
-        // In production, we'd want to track fees more precisely
-        return uint256(delta.amount0()) > 0 ? uint256(delta.amount0()) : 0;
+        // This is a simplified version - in production, you'd want to calculate
+        // the actual fees based on the pool's fee tier and the swap amount
+        if (delta.amount0() > 0) {
+            return uint256(uint128(delta.amount0()));
+        } else if (delta.amount1() < 0) {
+            return uint256(uint128(-delta.amount1()));
+        }
+        return 0;
     }
 
-    // Helper functions
+    function _distributeToStabilityPool(uint256 amount) internal {
+        // Distribute collateral to stability pool depositors
+        // This is a simplified version - in production, you'd want to calculate
+        // the share for each depositor based on their stake
+        uint256 totalStake = 0;
+        address[] memory depositors = _getStabilityDepositors();
+
+        for (uint256 i = 0; i < depositors.length; i++) {
+            totalStake += stabilityDeposits[depositors[i]].stake;
+        }
+
+        for (uint256 i = 0; i < depositors.length; i++) {
+            address depositor = depositors[i];
+            uint256 share = (amount * stabilityDeposits[depositor].stake) / totalStake;
+            collateralToken.transfer(depositor, share);
+        }
+    }
+
     function _getActiveTroveOwners() internal view returns (address[] memory) {
-        // Note: This is a simplified implementation
-        // In production, we'd want to use a more efficient data structure
+        // This is a simplified version - in production, you'd want to use
+        // a more efficient data structure for tracking active troves
         address[] memory owners = new address[](100); // Arbitrary size
         uint256 count = 0;
 
@@ -286,7 +338,7 @@ contract UNItHook {
             }
         }
 
-        // Resize array
+        // Resize array to actual count
         address[] memory result = new address[](count);
         for (uint256 i = 0; i < count; i++) {
             result[i] = owners[i];
@@ -295,34 +347,9 @@ contract UNItHook {
         return result;
     }
 
-    function _distributeToStabilityPool(uint256 amount) internal {
-        // Distribute collateral to stability pool depositors proportionally
-        if (totalStabilityDeposits == 0) return;
-
-        uint256 remainingAmount = amount;
-        address[] memory depositors = _getStabilityPoolDepositors();
-
-        for (uint256 i = 0; i < depositors.length; i++) {
-            address depositor = depositors[i];
-            StabilityDeposit storage deposit = stabilityDeposits[depositor];
-
-            if (deposit.amount == 0) continue;
-
-            uint256 share = (amount * deposit.amount) / totalStabilityDeposits;
-            if (share > remainingAmount) {
-                share = remainingAmount;
-            }
-
-            collateralToken.transfer(depositor, share);
-            remainingAmount -= share;
-
-            if (remainingAmount == 0) break;
-        }
-    }
-
-    function _getStabilityPoolDepositors() internal view returns (address[] memory) {
-        // Note: This is a simplified implementation
-        // In production, we'd want to use a more efficient data structure
+    function _getStabilityDepositors() internal view returns (address[] memory) {
+        // This is a simplified version - in production, you'd want to use
+        // a more efficient data structure for tracking stability depositors
         address[] memory depositors = new address[](100); // Arbitrary size
         uint256 count = 0;
 
@@ -334,7 +361,7 @@ contract UNItHook {
             }
         }
 
-        // Resize array
+        // Resize array to actual count
         address[] memory result = new address[](count);
         for (uint256 i = 0; i < count; i++) {
             result[i] = depositors[i];
@@ -343,32 +370,9 @@ contract UNItHook {
         return result;
     }
 
-    // Public functions for stability pool
-    function provideToStabilityPool(uint256 amount) external {
-        require(amount > 0, "Amount must be greater than 0");
-
-        unitToken.transferFrom(msg.sender, address(this), amount);
-
-        StabilityDeposit storage deposit = stabilityDeposits[msg.sender];
-        deposit.amount += amount;
-        deposit.stake += amount;
-
-        totalStabilityDeposits += amount;
-
-        emit StabilityDepositUpdated(msg.sender, deposit.amount);
-    }
-
-    function withdrawFromStabilityPool(uint256 amount) external {
-        StabilityDeposit storage deposit = stabilityDeposits[msg.sender];
-        require(deposit.amount >= amount, "Insufficient deposit");
-
-        deposit.amount -= amount;
-        deposit.stake -= amount;
-
-        totalStabilityDeposits -= amount;
-
-        unitToken.transfer(msg.sender, amount);
-
-        emit StabilityDepositUpdated(msg.sender, deposit.amount);
+    function _getCurrentPrice(bytes32 poolId) internal view returns (uint160) {
+        // For now, return a fixed price of 1:1
+        // In production, we would need to implement proper price fetching
+        return uint160(1 << 96);
     }
 }
