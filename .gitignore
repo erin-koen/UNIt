@@ -1,6 +1,43 @@
-# Compiler files
-cache/
+# Dependencies
+node_modules/
+lib/
+forge-std/
+ds-test/
+
+# Environment
+.env
+!.env.example
+
+# Build output
 out/
+cache/
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Coverage
+coverage/
+coverage.json
+
+# Misc
+*.sol
+!src/*.sol
+!test/*.sol
+!script/*.sol
 
 # Ignores development (and goerli) broadcast logs
 !/broadcast
