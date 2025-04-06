@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.26;
 
-import "forge-std/Script.sol";
-import "@uniswap/v4-core/contracts/interfaces/IPoolManager.sol";
-import "@uniswap/v4-core/contracts/libraries/PoolKey.sol";
-import "@uniswap/v4-core/contracts/libraries/Currency.sol";
+import "../lib/forge-std/src/Script.sol";
+import "../lib/v4-core/src/interfaces/IPoolManager.sol";
+import "../lib/v4-core/src/types/PoolKey.sol";
+import "../lib/v4-core/src/types/Currency.sol";
+import "../lib/v4-core/src/libraries/TickMath.sol";
 import "../src/UNItHook.sol";
 
 contract SetupPoolScript is Script {
@@ -24,18 +25,20 @@ contract SetupPoolScript is Script {
             currency1: Currency.wrap(unitToken),
             fee: 3000, // 0.3% fee tier
             tickSpacing: 60,
-            hooks: hook
+            hooks: IHooks(hook)
         });
 
-        // Initialize the pool
-        IPoolManager(poolManager).initialize(poolKey, 0);
+        // Initialize the pool with 1:1 price ratio
+        uint160 initialSqrtPriceX96 = uint160(1 << 96); // 1:1 price ratio
+        IPoolManager(poolManager).initialize(poolKey, initialSqrtPriceX96);
 
         console2.log("Pool initialized with key:");
         console2.log("Currency0:", collateralToken);
         console2.log("Currency1:", unitToken);
         console2.log("Fee:", poolKey.fee);
         console2.log("TickSpacing:", poolKey.tickSpacing);
-        console2.log("Hooks:", poolKey.hooks);
+        console2.log("Hooks:", address(poolKey.hooks));
+        console2.log("Initial sqrtPriceX96:", uint256(initialSqrtPriceX96));
 
         vm.stopBroadcast();
     }
