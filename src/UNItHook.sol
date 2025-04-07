@@ -100,6 +100,26 @@ contract UNItHook is IHooks {
         BalanceDelta feesAccrued,
         bytes calldata hookData
     ) external returns (bytes4, BalanceDelta) {
+        require(msg.sender == address(poolManager), "Only pool manager");
+
+        // Only process if this is our pool
+        if (keccak256(abi.encode(key)) != keccak256(abi.encode(poolKey))) {
+            return (IHooks.afterAddLiquidity.selector, BalanceDelta.wrap(0));
+        }
+
+        // Calculate collateral value from the delta
+        uint256 collateralValue = _getCollateralValue(params.liquidityDelta);
+
+        // Only mint if we're adding liquidity (positive delta)
+        if (params.liquidityDelta > 0 && collateralValue > 0) {
+            // Mint UNIt tokens to the sender based on collateral value
+            // Using 1:1 ratio for now, but could be adjusted based on protocol rules
+            unitToken.mint(sender, collateralValue);
+
+            // Update trove with new collateral and debt
+            _updateTrove(sender, collateralValue, int256(collateralValue));
+        }
+
         return (IHooks.afterAddLiquidity.selector, BalanceDelta.wrap(0));
     }
 
@@ -108,7 +128,27 @@ contract UNItHook is IHooks {
         PoolKey calldata key,
         IPoolManager.ModifyLiquidityParams calldata params,
         bytes calldata hookData
-    ) external pure returns (bytes4) {
+    ) external returns (bytes4) {
+        require(msg.sender == address(poolManager), "Only pool manager");
+
+        // Only process if this is our pool
+        if (keccak256(abi.encode(key)) != keccak256(abi.encode(poolKey))) {
+            return IHooks.beforeRemoveLiquidity.selector;
+        }
+
+        // Calculate collateral value from the delta
+        uint256 collateralValue = _getCollateralValue(params.liquidityDelta);
+
+        // Only burn if we're removing liquidity (negative delta)
+        if (params.liquidityDelta < 0 && collateralValue > 0) {
+            // Burn UNIt tokens from the sender based on collateral value
+            // Using 1:1 ratio to match the minting logic
+            unitToken.burn(sender, collateralValue);
+
+            // Update trove with reduced collateral and debt
+            _updateTrove(sender, collateralValue, -int256(collateralValue));
+        }
+
         return IHooks.beforeRemoveLiquidity.selector;
     }
 
