@@ -1,100 +1,127 @@
-# v4-template
-### **A template for writing Uniswap v4 Hooks 🦄**
+# UNIt Protocol - Uniswap v4 Hook Implementation
 
-[`Use this Template`](https://github.com/uniswapfoundation/v4-template/generate)
+A permissionless stablecoin protocol built on Uniswap v4 hooks, implementing Liquity-like mechanisms for maintaining peg stability.
 
-1. The example hook [Counter.sol](src/Counter.sol) demonstrates the `beforeSwap()` and `afterSwap()` hooks
-2. The test template [Counter.t.sol](test/Counter.t.sol) preconfigures the v4 pool manager, test tokens, and test liquidity.
+## Features
 
-<details>
-<summary>Updating to v4-template:latest</summary>
+- Permissionless minting and redemption
+- Automatic liquidations
+- Stability pool for liquidations
+- Revenue distribution to UNI stakers
+- Peg stability mechanisms
+- Uniswap v4 integration
 
-This template is actively maintained -- you can update the v4 dependencies, scripts, and helpers: 
+## Prerequisites
+
+- [Foundry](https://book.getfoundry.sh/getting-started/installation)
+- Node.js and npm
+- Access to an Ethereum node (Infura, Alchemy, etc.)
+
+## Installation
+
+1. Clone the repository:
 ```bash
-git remote add template https://github.com/uniswapfoundation/v4-template
-git fetch template
-git merge template/main <BRANCH> --allow-unrelated-histories
+git clone https://github.com/your-org/unit-protocol.git
+cd unit-protocol
 ```
 
-</details>
-
----
-
-### Check Forge Installation
-*Ensure that you have correctly installed Foundry (Forge) Stable. You can update Foundry by running:*
-
-```
-foundryup
-```
-
-> *v4-template* appears to be _incompatible_ with Foundry Nightly. See [foundry announcements](https://book.getfoundry.sh/announcements) to revert back to the stable build
-
-
-
-## Set up
-
-*requires [foundry](https://book.getfoundry.sh)*
-
-```
+2. Install dependencies:
+```bash
 forge install
-forge test
 ```
 
-### Local Development (Anvil)
+3. Copy the environment file and fill in your values:
+```bash
+cp .env.example .env
+```
 
-Other than writing unit tests (recommended!), you can only deploy & test hooks on [anvil](https://book.getfoundry.sh/anvil/)
+## Configuration
+
+Edit the `.env` file with your configuration:
+
+- Network RPC URLs
+- Private keys for deployment and testing
+- Contract addresses (will be filled after deployment)
+- Gas settings
+- Protocol parameters
+
+## Deployment
+
+### 1. Deploy Contracts
+
+Deploy the UNIt token and hook contracts:
 
 ```bash
-# start anvil, a local EVM chain
-anvil
-
-# in a new terminal
-forge script script/Anvil.s.sol \
-    --rpc-url http://localhost:8545 \
-    --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
-    --broadcast
+forge script script/Deploy.s.sol:DeployScript --rpc-url $SEPOLIA_RPC_URL --broadcast --verify -vvvv
 ```
 
-See [script/](script/) for hook deployment, pool creation, liquidity provision, and swapping.
+This will deploy:
+- UNIt token contract
+- UNItHook contract
 
----
+### 2. Set Up Uniswap v4 Pool
 
-<details>
-<summary><h2>Troubleshooting</h2></summary>
+After deployment, set up the Uniswap v4 pool:
 
+```bash
+forge script script/SetupPool.s.sol:SetupPoolScript --rpc-url $SEPOLIA_RPC_URL --broadcast --verify -vvvv
+```
 
+This will:
+- Initialize the UNIt/collateral pool
+- Configure the hook
+- Set up the fee tier and tick spacing
 
-### *Permission Denied*
+### 3. Verify Contracts (Optional)
 
-When installing dependencies with `forge install`, Github may throw a `Permission Denied` error
+If you want to verify the contracts on Etherscan:
 
-Typically caused by missing Github SSH keys, and can be resolved by following the steps [here](https://docs.github.com/en/github/authenticating-to-github/connecting-to-github-with-ssh) 
+```bash
+forge verify-contract --chain-id 11155111 --constructor-args $(cast abi-encode "constructor(address)" $POOL_MANAGER_ADDRESS) $UNIT_TOKEN_ADDRESS src/UNIt.sol:UNIt
+forge verify-contract --chain-id 11155111 --constructor-args $(cast abi-encode "constructor(address,address,address)" $POOL_MANAGER_ADDRESS $UNIT_TOKEN_ADDRESS $COLLATERAL_TOKEN_ADDRESS) $UNIT_HOOK_ADDRESS src/UNItHook.sol:UNItHook
+```
 
-Or [adding the keys to your ssh-agent](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent#adding-your-ssh-key-to-the-ssh-agent), if you have already uploaded SSH keys
+## Usage
 
-### Hook deployment failures
+### Minting UNIt
 
-Hook deployment failures are caused by incorrect flags or incorrect salt mining
+1. Provide collateral to the Uniswap v4 pool
+2. The hook will automatically mint UNIt tokens based on the collateral value
+3. Maintain the minimum collateral ratio (110%)
 
-1. Verify the flags are in agreement:
-    * `getHookCalls()` returns the correct flags
-    * `flags` provided to `HookMiner.find(...)`
-2. Verify salt mining is correct:
-    * In **forge test**: the *deployer* for: `new Hook{salt: salt}(...)` and `HookMiner.find(deployer, ...)` are the same. This will be `address(this)`. If using `vm.prank`, the deployer will be the pranking address
-    * In **forge script**: the deployer must be the CREATE2 Proxy: `0x4e59b44847b379578588920cA78FbF26c0B4956C`
-        * If anvil does not have the CREATE2 deployer, your foundry may be out of date. You can update it with `foundryup`
+### Redemption
 
-</details>
+1. When the price is below peg, redemption is automatically triggered
+2. Users can redeem UNIt for collateral at a 0.5% fee
+3. Redemption helps maintain the peg by reducing supply
 
----
+### Stability Pool
 
-Additional resources:
+1. Users can deposit UNIt into the stability pool
+2. The pool receives collateral from liquidated troves
+3. Depositors earn rewards from liquidations
 
-[Uniswap v4 docs](https://docs.uniswap.org/contracts/v4/overview)
+### Liquidations
 
-[v4-periphery](https://github.com/uniswap/v4-periphery) contains advanced hook implementations that serve as a great reference
+1. Undercollateralized troves are automatically liquidated
+2. The stability pool receives the collateral
+3. Liquidators receive a 10% reward
 
-[v4-core](https://github.com/uniswap/v4-core)
+## Testing
 
-[v4-by-example](https://v4-by-example.org)
+Run the test suite:
 
+```bash
+forge test -vv
+```
+
+## Security Considerations
+
+- The protocol is permissionless, but users should be aware of risks
+- Always maintain sufficient collateral to avoid liquidation
+- Monitor the stability pool for potential rewards
+- Be cautious of price volatility and its impact on collateral ratios
+
+## License
+
+MIT
